@@ -612,6 +612,7 @@ print('elapsed: {:.4}s'.format(time.time() - t0))
 timings['dc-3d-column-mesh'] = time.time() - t0
 
 #%% test timelapse 3D -- takes a long time
+t0 = time.time()
 k = Project(typ='R3t')
 k.createTimeLapseSurvey(testdir + 'dc-3d-timelapse-protocol/data' ,ftype='ProtocolDC')
 k.importElec(testdir + 'dc-3d-timelapse-protocol/elec/electrodes3D-1.csv')
@@ -624,6 +625,26 @@ k.showResults(index=1,use_pyvista=use_pyvista)
 t0 = time.time()
 k.mesh.orderNodes()
 t1 = time.time() - t0
+print('elapsed: {:.4}s'.format(time.time() - t0))
+timings['dc-3d-timelapse'] = time.time() - t0
+
+
+#%% test CSD inversion
+t0 = time.time()
+k = Project(typ='R2')
+elec = np.zeros((10,3))
+elec[:,0] = np.arange(elec.shape[0])
+k.setElec(elec)
+k.createSequence()
+k.createMesh('trian', cl=0.2)
+k.addRegion(xz=[[2,-0.5],[6,-0.5],[6,-1.5],[2,-1.5]], res0=20)
+k.showMesh(attr='res0')
+k.createSequenceCSD()
+k.forwardCSD()
+k.invertCSD()
+k.showCSD()
+print('elapsed: {:.4}s'.format(time.time() - t0))
+timings['csd'] = time.time() - t0
 
 #%% print final summary information 
 for key in timings.keys():

@@ -2678,8 +2678,235 @@ class Project(object): # Project master class instanciated by the GUI
             else:
                 self.showResults()
                 
-                
+    
+    def createSequenceCSD(self, A=1, B=2, params=[('dpdp1', 1, 8)], seqIdx=None,
+                       *kwargs):
+        """Create a sequence for Current Source Density (CSD) used in 
+        Mise-à-la-masse.
+        A will be an electrode far away and B will be connected to the trunk.
+        M and N will measured potential difference on the remaining electrodes.
+        
+        Parameters
+        ----------
+        A : int, optional
+            Index of the A electrode (also called C1) for current injection in ABMN.
+        B : tuple of float, optional
+            Index of the B electrode (also called C2) for current injection in ABMN.
+        params : list of tuple, optional
+            Each tuple is the form (<array_name>, param1, param2, ...)
+            Types of sequences available are : 'dpdp1','dpdp2','wenner_alpha',
+            'wenner_beta', 'wenner_gamma', 'schlum1', 'schlum2', 'multigrad'.
+        """
+        # create sequence
+        self.createSequence(params=params, seqIdx=seqIdx, *kwargs)
+        
+        # TODO this will need to be adapted for 'label' string and not electrode index
+        # filter (considering B is elec 2 (=index 1) is our source)
+        seq = self.sequence.copy()
+        i2keep = (seq[:,2] != 1) & (seq[:,3] != 1) # no potential measurement on B
+        self.sequence = seq[i2keep,:]
+        
+        
+        
+    def forwardCSD(self, sources=[(1.0, 0.0, -1.0, 1.0)], noise=0.05):
+        """Forward Current Source Density (CSD) from Mise-à-la-masse (MALM).
+        
+        Parameters
+        ----------
+        sources : list of tuple, optional
+            List of sources locations (X, Y, Z) and the density of current (in percentage??).
+            All current density values will be transformed into proportion of the total.
+            e.g. [(2,0,-1,0.7),(1,1,0,0.3)] means we have two sources: one at x=2, y=0, z=-1
+            and one at x=1, y=1, z=0. The first source emits 70% of the current and the second 30%.
+        noise : float, optional
+            Noise level as a proportion on the measured transfer resistances (0.05 = 5%).
+        """
+        from scipy.spatial.distance import cdist # reimport as the one created on top is 2D only
+        # TODO don't know how to simulate two or more sources? 
+        # or just mean the results of several of them? (implemented here)
 
+        R = np.zeros((self.sequence.shape[0], len(sources)), dtype=float)
+        for i, source in enumerate(sources):
+            # snap source location to closest node point
+            nodes = self.mesh.node
+            dist = cdist(np.array(source[:3])[None,:], nodes)
+            imin = np.argmin(dist, axis=1)[0]
+            print('Closest node at {:.2f}, {:.2f}, {:.2f}'.format(*nodes[imin,:]))
+
+            # setup the nodes that are the sources of the current        
+            self.param['node_elec'][1][1] = imin # the source to be found (CHANGE HERE)
+            self.forward()
+            R[:,i] = self.surveys[0].df['resist'].values
+            
+        # TODO check that below??!
+        # take the mean of all simulation as observed resistance to simulate multiple sources
+        Robs = np.mean(R, axis=1)
+        
+        # adding noise
+        def addnoise(x, level=0.05):
+            return x + np.random.randn(1)*x*level
+        addnoise = np.vectorize(addnoise)
+        Robs = addnoise(Robs, noise)
+        
+        # save to dataframe
+        self.surveys[0].df['resist'] = Robs
+        
+        
+    
+    def invertCSD(self, grid=[(1,5,5),(0,0,1),(-0.5,-2,3)], dump=None, splot=False):
+        """Invert Current Source Density (CSD) from Mise-à-la-masse (MALM).
+        
+        Parameters
+        ----------
+        grid : list of tuple of float
+            Specify the extend of the grid to search for CSD sources.
+            Each tuple specifies, the start, end and number of samples.
+            These values will be provided to numpy.linspace. There are
+            3 tuples for X, Y and Z directions. The computed positions
+            will be snapped to the closest node of the mesh (hence make
+            the mesh fine enough for better resolution). Use `showCSD()`
+            to view the exact location and values of the sources.
+        dump : function, optional
+            If provided, string output will be passed to it. If `None`,
+            `print()` will be used instead.
+        splot : bool, optional
+            If `True`, the graph of the potential sources snapped on nodes
+            will be plotted.
+        """
+        from scipy.linalg import lstsq
+
+        # check arguments
+        for a in grid:
+            if a[2] <=0:
+                a = 1 # there should be at least one sample per directions
+        if dump is None:
+            def dump(x):
+                print(x, end='')
+                
+        # create a regular grid of possible sources
+        dump('Building grid of potential sources...')
+        dx = np.linspace(*grid[0])
+        dy = np.linspace(*grid[1])
+        dz = np.linspace(*grid[2])
+        gridx, gridy, gridz = np.meshgrid(dx, dy, dz)
+        gridx = gridx.flatten()
+        gridy = gridy.flatten()
+        gridz = gridz.flatten()
+        sources = np.c_[gridx, gridy, gridz]
+        
+        # snap grid points to mesh nodes
+        from scipy.spatial.distance import cdist
+        nodes = self.mesh.node
+        dist = cdist(sources, nodes)
+        imin = np.argmin(dist, axis=1)
+
+        if splot:
+            fig, ax = plt.subplots()
+            self.showMesh(ax=ax)
+            ax.plot(nodes[imin,0], nodes[imin,2], 'ro')
+        
+        # if by snapping, two sources are on the same node
+        a = len(imin) - len(np.unique(imin))
+        if a > 0:
+            print('ERROR\n: due to snapping sources to nodes, {:d} sources'
+                  'are on the same node. Reduce source density or refine'
+                  'mesh.'.format(a))
+            return
+        else:
+            dump('done\n')
+
+        # save it as it's overwritten by simulations
+        Robs = self.surveys[0].df['resist'].values.copy()
+        nquad = len(Robs) # number of quadrupoles
+        nsrc = len(imin) # number of potential sources
+        
+        # build top part of the matrix A (time consuming part)
+        # compute response for each possible source
+        dump('Running simulations...')
+        def fdump(x): # fake dump to avoid seeing output of each run
+            pass
+        Rsim = np.zeros((nquad, nsrc))
+        # TODO make this in parallel
+        for i, d in enumerate(imin):
+            dump('\rRunning simulations...{:d}/{:d}'.format(i+1,nsrc))
+            self.param['node_elec'][1][1] = d
+            self.forward(dump=fdump)
+            Rsim[:,i] = self.surveys[0].df['resist'].values
+        dump('...done\n')
+        
+        dump('Building matrices and solving...')
+        # buiding matrix A
+        A = np.zeros((nquad + 1  + nsrc, nsrc))
+        A[:nquad,:] = Rsim
+        A[nquad,:] = 1 # charge conservation
+        L1 = np.eye(nsrc) + np.eye(nsrc, k=-1)*-1
+        L1[0,1] = -1
+        print(L1)
+        A[nquad+1:,:] = L1
+        
+        # building matrix b
+        b = np.zeros((nquad + 1 + nsrc, 1))
+        b[:nquad,0] = Robs
+        b[nquad,0] = 1 # charge conservation
+
+#         print(A)
+#         print(b)
+        # solving
+        x, residues, rank, singularValues = lstsq(A, b)#Rsim, Robs)
+        
+        # store results in CSD dataframe
+        self.csd = pd.DataFrame()
+        self.csd['x'] = nodes[imin,0].copy()
+        self.csd['y'] = nodes[imin,1].copy()
+        self.csd['z'] = nodes[imin,2].copy()
+        self.csd['csd'] = x
+                    
+        fig, ax = plt.subplots()
+        ax.semilogy(x, 'o')
+        dump('done\n')
+        
+                    
+    
+    def showCSD(self, csdmin=None, csdmax=None, csdcmap='viridis', 
+                ax=None, contour=False, res=True, **kwargs):
+        """Show current density distribution (CSD).
+        
+        Parameters
+        ----------
+        csdmin : float, optional
+            Min value of colorscale.
+        csdmax : float, optional
+            Max value of colorscale.
+        csdcamp : str, optional
+            Color map of CSD values.
+        ax : matplotlib.Axes.axes
+            Matplotlib axes. If none a new figure will be created.
+        contour : bool, optional
+            If `True`, contour will be plotted and `res` will be set to `False`.
+        res : bool, optional
+            If `True`, the resistivity will be plotted in the background.
+        **kwargs : arguments
+            Other arguments to be passed to `showResults()`.
+        """
+        if 'color_map' not in kwargs:
+            kwargs['color_map'] = 'Blues'
+        if 'sens' not in kwargs:
+            kwargs['sens'] = False
+        if 'edge_color' not in kwargs:
+            kwargs['edge_color'] = 'k'
+        if ax is None:
+            fig, ax = plt.subplots()
+        if contour is False and res is True:
+            # some arguments needs to be checked for inside kwargs
+            self.showResults(ax=ax, **kwargs)
+        if contour:
+            cax = ax.tricontourf(self.csd['x'], self.csd['z'], self.csd['csd'])
+        else:
+            cax = ax.scatter(self.csd['x'], self.csd['z'], 50, self.csd['csd'], 
+                         cmap=csdcmap, vmin=csdmin, vmax=csdmax)
+        fig.colorbar(cax, label='Current Source Density')
+
+        
 
     def modelDOI(self, dump=None):
         """Will rerun the inversion with a background constrain (alpha_s) with
@@ -3645,6 +3872,7 @@ class Project(object): # Project master class instanciated by the GUI
     def createSequenceXBH(self):
         """Custom scheme for boreholes (not yet developed)
         """
+        print('TODO')
         pass
 
 
@@ -3899,9 +4127,11 @@ class Project(object): # Project master class instanciated by the GUI
             
         self.surveys = [] # need to flush it (so no timeLapse forward)
         if self.typ[0] == 'c':
-            self.createSurvey(os.path.join(fwdDir, self.typ + '_forward.dat'), ftype='forwardProtocolIP')
+            self.createSurvey(os.path.join(fwdDir, self.typ + '_forward.dat'), 
+                              ftype='forwardProtocolIP', debug=False)
         else:
-            self.createSurvey(os.path.join(fwdDir, self.typ + '_forward.dat'), ftype='forwardProtocolDC')
+            self.createSurvey(os.path.join(fwdDir, self.typ + '_forward.dat'), 
+                              ftype='forwardProtocolDC', debug=False)
         # NOTE the 'ip' columns here is in PHASE not in chargeability
         self.surveys[0].kFactor = 1 # kFactor by default is = 1 now, though wouldn't hurt to have this here!
         self.surveys[0].df['resist'] = addnoise(self.surveys[0].df['resist'].values, self.noise/100)
