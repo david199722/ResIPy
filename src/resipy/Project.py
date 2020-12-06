@@ -316,6 +316,7 @@ class Project(object): # Project master class instanciated by the GUI
         self.custSeq = False # flag - True if of 3D custom sequence imported
         self.errTyp = 'global'# type of error model to be used in batch and timelapse surveys
         self.surfaceIdx = None # used to show plan view iterations of 3D inversions
+        self.csd = pd.DataFrame(columns=['x','y','z','csd']) # CSD dataframe to be populated by invertCSD()
 
     def setBorehole(self, val=False):
         """Set all surveys in borehole type if `True` is passed.
@@ -2725,7 +2726,11 @@ class Project(object): # Project master class instanciated by the GUI
         from scipy.spatial.distance import cdist # reimport as the one created on top is 2D only
         # TODO don't know how to simulate two or more sources? 
         # or just mean the results of several of them? (implemented here)
-
+        
+        # create sequence if we don't have one
+        if self.sequence is None:
+            self.createSequenceCSD()
+            
         R = np.zeros((self.sequence.shape[0], len(sources)), dtype=float)
         for i, source in enumerate(sources):
             # snap source location to closest node point
@@ -2982,6 +2987,8 @@ class Project(object): # Project master class instanciated by the GUI
             kwargs['edge_color'] = 'k'
         if ax is None:
             fig, ax = plt.subplots()
+        else:
+            fig = ax.figure
         if contour is False and res is True:
             if len(self.meshResults) == 0: # no ERT inversion done
                 if 'attr' not in kwargs:

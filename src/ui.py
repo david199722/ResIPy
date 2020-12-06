@@ -5171,39 +5171,46 @@ combination of multiple sequence is accepted as well as importing a custom seque
         self.tabs.addTab(self.csdTab, 'CSD')
         
         # CSD Data
-        self.csdInstructions = QLabel('Current Source Density (CSD) are measurements collected using '
+        self.csdInstructions = QLabel('<b>!EXPERIMENTAL!</b> Current Source Density (CSD) are measurements collected using '
                                 'Mise-à-la-masse (MALM) method where one current electrode is '
                                 'connected to the trunk or stem of the plant and the other to '
                                  'the ground. In this tab you can either generate synthetic '
                                  'distribution of sources or import field data.')
         self.csdInstructions.setWordWrap(True)
         
-        self.csdForwardLabel = QLabel('Forward:')
+        self.csdForwardLabel = QLabel('<b>Forward:</b>')
         self.csdForwardLevelLabel = QLabel('Number of levels:')
-        self.csdForwardLevel = QLineEdit('0,1,2')
-        self.csdForwardLevel.setToolTip('Level/Skip, comma separated')
         self.csdForwardSourceLabel = QLabel('Sources:')
         self.csdForwardSource = QLineEdit('1,0,-0.5,1') # TODO put it in an interactive table
         self.csdForwardNoiseLabel = QLabel('Noise [%]:')
         self.csdForwardNoise = QLineEdit('5')
         self.csdForwardNoise.setValidator(QDoubleValidator())
+        self.csdForwardLogLabel = QLabel('0 measurements')
         
         def csdForwardBtnFunc():
-            source = [float(a) for a in self.csdForwardSource.text().split()]
+            self.csdForwardBtn.setText('Running...')
+            QApplication.processEvents()
+            source = [float(a) for a in self.csdForwardSource.text().split(',')]
             sources = [tuple(source)]
             noise = float(self.csdForwardNoise.text())
-            self.r2.forwardCSD(sources=sources, noise=noise)
-            # TODO show the results as pseudo-section
+            self.project.createSequenceCSD() # TODO add more argument for that?
+            self.project.forwardCSD(sources=sources, noise=noise)
+            self.csdForwardLogLabel.setText('{:d} measurements generated'.format(
+                self.project.surveys[0].df.shape[0]))
+            self.csdForwardBtn.setText('Generate Data')
+            # TODO show the results as pseudo-section?
         self.csdForwardBtn = QPushButton('Generate Data')
         self.csdForwardBtn.clicked.connect(csdForwardBtnFunc)
         
-        self.csdImportLabel = QLabel('Import Data:') 
+        self.csdImportLabel = QLabel('<b>Import Data:</b>') 
         def csdImportBtnFunc():
             fname, _ = QFileDialog.getOpenFileName(self.csdTab,'Open File', self.datadir)
             if fname != '':
                 self.csdImportBtn.setText(os.path.basename(fname))
                 ftype = 'ProtocolIP' if self.typ[0] == 'c' else 'ProtocolDC'
                 self.createSurvey(fname, ftype=ftype)
+                self.csdForwardLogLabel.setText('{:d} measurements imported'.format(
+                self.project.surveys[0].df.shape[0]))
         self.csdImportBtn = QPushButton('Select file')
         self.csdImportBtn.setToolTip('Select a protocol.dat with CSD data')
         self.csdImportBtn.clicked.connect(csdImportBtnFunc)
@@ -5243,7 +5250,8 @@ combination of multiple sequence is accepted as well as importing a custom seque
         self.gridzN.setValidator(QIntValidator())
         self.gridzN.setToolTip('Number of samples in the Z direction.')
         
-        def csdInvertBtnFunc():            
+        def csdInvertBtnFunc():
+            self.csdLog.setText('')
             # check if we kill or invert
             if self.invertBtn.text() == 'Invert':
                 self.invertParallel2 = True
@@ -5275,7 +5283,7 @@ combination of multiple sequence is accepted as well as importing a custom seque
             nsample = []
             for obj in objs2:
                 try:
-                    nsample.append(float(obj.text()))
+                    nsample.append(int(obj.text()))
                 except Exception as e:
                     self.errorDump("Invalid argument in grid number of samples (> 0)")
                     self.invertBtn.setStyleSheet('background-color: green')
@@ -5285,7 +5293,10 @@ combination of multiple sequence is accepted as well as importing a custom seque
                     (bounds[2], bounds[3], nsample[1]),
                     (bounds[4], bounds[5], nsample[2])]
             self.project.invertCSD(grid=grid, dump=csdLogText)
-            self.mwCSD.plot(self.project.showCSD)
+            if self.project.csd.shape[0] == 0:
+                self.errorDump('Some sources on the same node. Reduce source density or refine mesh.')
+            else:
+                self.mwCSD.plot(self.project.showCSD)
             self.invertBtn.setStyleSheet('background-color: green')
             self.invertBtn.setText('Invert')
             
@@ -5295,14 +5306,14 @@ combination of multiple sequence is accepted as well as importing a custom seque
         
         def csdLogText(arg):
             cursor = self.csdLog.textCursor()
-            cursor.movePosition(cursor.End)
+#             cursor.movePosition(cursor.End)
             cursor.insertText(arg)
             self.logText.ensureCursorVisible()
             QApplication.processEvents()
         self.csdLog = QTextEdit()
         self.csdLog.setReadOnly(True)
         
-        self.mwCSD = MatplotlibWidget() # maybe add pyvista plotter?
+        self.mwCSD = MatplotlibWidget(navi=True) # maybe add pyvista plotter?
         
         
         # layout
@@ -5310,21 +5321,33 @@ combination of multiple sequence is accepted as well as importing a custom seque
         csdLayout.addWidget(self.csdInstructions)
         
         csdInputLayout = QHBoxLayout()
-        csdInputLayout.addWidget(self.csdForwardLabel)
-        csdInputLayout.addWidget(self.csdForwardSourceLabel)
-        csdInputLayout.addWidget(self.csdForwardSource)
-        csdInputLayout.addWidget(self.csdForwardNoiseLabel)
-        csdInputLayout.addWidget(self.csdForwardNoise)
-        csdInputLayout.addWidget(self.csdForwardLevelLabel)
-        csdInputLayout.addWidget(self.csdForwardLevel)
+        csdForwardGroup = QGroupBox()
+        csdForwardGroup.setStyleSheet("QGroupBox{padding-top:1em; margin-top:-1em}")
+        csdForwardLayout = QHBoxLayout()
+        csdForwardLayout.addWidget(self.csdForwardLabel)
+        csdForwardLayout.addWidget(self.csdForwardSourceLabel)
+        csdForwardLayout.addWidget(self.csdForwardSource)
+        csdForwardLayout.addWidget(self.csdForwardNoiseLabel)
+        csdForwardLayout.addWidget(self.csdForwardNoise)
 #         csdInputLayout.addWidget(self.csdImportSequence)
-
-        csdInputLayout.addWidget(self.csdForwardBtn)
-        csdInputLayout.addWidget(self.csdImportLabel)
-        csdInputLayout.addWidget(self.csdImportBtn)
+        csdForwardLayout.addWidget(self.csdForwardBtn)
+        csdForwardGroup.setLayout(csdForwardLayout)
+        csdInputLayout.addWidget(csdForwardGroup, 60)
+        
+        csdImportGroup = QGroupBox()
+        csdImportGroup.setStyleSheet("QGroupBox{padding-top:1em; margin-top:-1em}")
+        csdImportLayout = QHBoxLayout()
+        csdImportLayout.addWidget(self.csdImportLabel)
+        csdImportLayout.addWidget(self.csdImportBtn)
+        csdImportGroup.setLayout(csdImportLayout)
+        csdInputLayout.addWidget(csdImportGroup, 40)
         csdLayout.addLayout(csdInputLayout)
         
-        csdLayout.addWidget(self.gridLabel)
+        csdLabelLayout = QHBoxLayout()
+        csdLabelLayout.addWidget(self.csdForwardLogLabel, 30)
+        csdLabelLayout.addWidget(self.gridLabel, 70)
+        csdLayout.addLayout(csdLabelLayout)
+        
         csdInvLayout = QHBoxLayout()
         csdInvLayout.addWidget(self.gridxLabel)
         csdInvLayout.addWidget(self.gridxStart)
