@@ -34,6 +34,7 @@ from resipy.meshTools import cropSurface
 from resipy.template import startAnmt, endAnmt
 from resipy.protocol import (dpdp1, dpdp2, wenner_alpha, wenner_beta, wenner,
                           wenner_gamma, schlum1, schlum2, multigrad)
+from resipy.parsers import protocolParser
 from resipy.SelectPoints import SelectPoints
 from resipy.saveData import (write2Res2DInv, write2csv, writeSrv)
 
@@ -253,8 +254,19 @@ def cdist(a):
     z = np.array([complex(x[0], x[1]) for x in a])
     return np.abs(z[...,np.newaxis]-z)
 
+# little class to kill parallel processes
+class ProcsManagement(object): # little class to handle the kill
+    def __init__(self, r2object):
+        self.r2 = r2object
+    def kill(self):
+        print('killing...')
+        self.r2.irunParallel2 = False # this will end the infinite loop
+        procs = self.r2.procs # and kill the running processes
+        for p in procs:
+            p.terminate()
+        print('all done!')
 
-
+        
 #%% main Project class (called 'R2' in previous versions)
 class Project(object): # Project master class instanciated by the GUI
     """Master class to handle all processing around the inversion codes.
@@ -2465,17 +2477,6 @@ class Project(object): # Project master class instanciated by the GUI
         self.procs = []
 
         # kill management
-        class ProcsManagement(object): # little class to handle the kill
-            def __init__(self, r2object):
-                self.r2 = r2object
-            def kill(self):
-                print('killing...')
-                self.r2.irunParallel2 = False # this will end the infinite loop
-                procs = self.r2.procs # and kill the running processes
-                for p in procs:
-                    p.terminate()
-                print('all done!')
-
         self.proc = ProcsManagement(self)
 
         # run in // (http://code.activestate.com/recipes/577376-simple-way-to-execute-multiple-process-in-parallel/)
@@ -2753,7 +2754,8 @@ class Project(object): # Project master class instanciated by the GUI
         
         
     
-    def invertCSD(self, grid=[(1,5,5),(0,0,1),(-0.5,-2,3)], dump=None, splot=False):
+    def invertCSD(self, grid=[(1,5,5),(0,0,1),(-0.5,-2,3)], dump=None,
+                  njobs=8):
         """Invert Current Source Density (CSD) from Mise-à-la-masse (MALM).
         
         Parameters
@@ -2769,10 +2771,11 @@ class Project(object): # Project master class instanciated by the GUI
         dump : function, optional
             If provided, string output will be passed to it. If `None`,
             `print()` will be used instead.
-        splot : bool, optional
-            If `True`, the graph of the potential sources snapped on nodes
-            will be plotted.
+        njobs : int, optional
+            Number of process for the simulation of current sources. By 
+            default 8 processes available are used.
         """
+        print('TODO the implementation of this method needs to be checked!')
         from scipy.linalg import lstsq
 
         # check arguments
@@ -2799,11 +2802,6 @@ class Project(object): # Project master class instanciated by the GUI
         nodes = self.mesh.node
         dist = cdist(sources, nodes)
         imin = np.argmin(dist, axis=1)
-
-        if splot:
-            fig, ax = plt.subplots()
-            self.showMesh(ax=ax)
-            ax.plot(nodes[imin,0], nodes[imin,2], 'ro')
         
         # if by snapping, two sources are on the same node
         a = len(imin) - len(np.unique(imin))
@@ -2826,12 +2824,103 @@ class Project(object): # Project master class instanciated by the GUI
         def fdump(x): # fake dump to avoid seeing output of each run
             pass
         Rsim = np.zeros((nquad, nsrc))
-        # TODO make this in parallel
-        for i, d in enumerate(imin):
-            dump('\rRunning simulations...{:d}/{:d}'.format(i+1,nsrc))
-            self.param['node_elec'][1][1] = d
-            self.forward(dump=fdump)
-            Rsim[:,i] = self.surveys[0].df['resist'].values
+        
+        # --------------- sequential simulations
+#         for i, d in enumerate(imin):
+#             dump('\rRunning simulations...{:d}/{:d}'.format(i+1,nsrc))
+#             self.param['node_elec'][1][1] = d
+#             self.forward(dump=fdump)
+#             Rsim[:,i] = self.surveys[0].df['resist'].values
+        
+        # --------------- parallel simulations
+        # first simulation done sequentially (so all files are copied fine)
+        dump('\rRunning simulations...{:d}/{:d}'.format(1,nsrc))
+        self.param['node_elec'][1][1] = imin[0]
+        self.forward(dump=fdump)
+        self.iForward = False
+        Rsim[:,0] = self.surveys[0].df['resist'].values
+        
+        # create path to executable and cmd
+        exePath = os.path.join(self.apiPath, 'exe', self.typ + '.exe')
+        if OS == 'Windows':
+            cmd = [exePath]
+        elif OS == 'Darwin':
+            winetxt = 'wine'
+            if getMacOSVersion():
+                winetxt = 'wine64'
+            winePath = []
+            wine_path = Popen(['which', winetxt], stdout=PIPE, shell=False, universal_newlines=True)#.communicate()[0]
+            for stdout_line in iter(wine_path.stdout.readline, ''):
+                winePath.append(stdout_line)
+            if winePath != []:
+                cmd = ['%s' % (winePath[0].strip('\n')), exePath]
+            else:
+                cmd = ['/usr/local/bin/%s' % winetxt, exePath]
+        else:
+            cmd = ['wine',exePath]
+        if OS == 'Windows':
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+
+        # create all the working directories
+        toMove = ['mesh.dat', 'mesh3d.dat','R2.in','cR2.in',
+                  'R3t.in', 'cR3t.in', 'res0.dat','resistivity.dat',
+                  'Start_res.dat', 'protocol.dat']
+        wds = []
+        for i, d in enumerate(imin[1:]):
+            self.param['node_elec'][1][1] = imin[i]
+            self.write2in()
+            wd = os.path.join(self.dirname, str(i+1))
+            if os.path.exists(wd):
+                shutil.rmtree(wd)
+            os.mkdir(wd)            
+            for f in toMove:
+                file = os.path.join(self.dirname, 'fwd', f)
+                if os.path.exists(file):
+                    shutil.copy(file, os.path.join(wd, f))
+            wds.append(wd)
+        wds2 = wds.copy()
+
+        # create essential attribute
+        ncores = njobs
+        self.irunParallel2 = True
+        self.procs = []
+        self.proc = ProcsManagement(self) # to kill all processes in // if needed
+
+        # run in // (http://code.activestate.com/recipes/577376-simple-way-to-execute-multiple-process-in-parallel/)
+        # In an infinite loop, will run an number of process (according to the number of cores)
+        # the loop will check when they finish and start new ones.
+        def done(p):
+            return p.poll() is not None
+
+        c = 1
+        dump('\rRunning simulations...{:d}/{:d}'.format(c, nsrc))
+        while self.irunParallel2:
+            while wds and len(self.procs) < ncores:
+                wd = wds.pop()
+                if OS == 'Windows':
+                    p = Popen(cmd, cwd=wd, stdout=PIPE, shell=False, universal_newlines=True, startupinfo=startupinfo)
+                else:
+                    p = Popen(cmd, cwd=wd, stdout=PIPE, shell=False, universal_newlines=True)
+                self.procs.append(p)
+                
+            for p in self.procs:
+                if done(p):
+                    self.procs.remove(p)
+                    c = c+1
+                    dump('\rRunning simulations...{:d}/{:d}'.format(c, nsrc))
+
+            if not self.procs and not wds:
+                break
+            else:
+                time.sleep(0.05) # (g) why do we need that again?
+
+        # retrieve data
+        ip = True if self.typ[0] == 'c' else False
+        for i, wd in enumerate(wds2):
+            elec, df = protocolParser(os.path.join(wd, self.typ + '_forward.dat'), ip=ip, fwd=True)
+            Rsim[:,i+1] = df['resist'].values # TODO no IP implemented in this approach...
+        [shutil.rmtree(wd) for wd in wds2]
         dump('...done\n')
         
         dump('Building matrices and solving...')
@@ -2841,7 +2930,6 @@ class Project(object): # Project master class instanciated by the GUI
         A[nquad,:] = 1 # charge conservation
         L1 = np.eye(nsrc) + np.eye(nsrc, k=-1)*-1
         L1[0,1] = -1
-        print(L1)
         A[nquad+1:,:] = L1
         
         # building matrix b
@@ -2861,8 +2949,6 @@ class Project(object): # Project master class instanciated by the GUI
         self.csd['z'] = nodes[imin,2].copy()
         self.csd['csd'] = x
                     
-        fig, ax = plt.subplots()
-        ax.semilogy(x, 'o')
         dump('done\n')
         
                     
@@ -2897,8 +2983,12 @@ class Project(object): # Project master class instanciated by the GUI
         if ax is None:
             fig, ax = plt.subplots()
         if contour is False and res is True:
-            # some arguments needs to be checked for inside kwargs
-            self.showResults(ax=ax, **kwargs)
+            if len(self.meshResults) == 0: # no ERT inversion done
+                if 'attr' not in kwargs:
+                    kwargs['attr'] = 'res0'
+                self.mesh.show(ax=ax, **kwargs)
+            else:
+                self.showResults(ax=ax, **kwargs)
         if contour:
             cax = ax.tricontourf(self.csd['x'], self.csd['z'], self.csd['csd'])
         else:
@@ -3093,8 +3183,8 @@ class Project(object): # Project master class instanciated by the GUI
             attr = 'Sigma_real(log10)'
         keys = list(self.meshResults[index].df.keys())
         if attr not in keys:
+            print('Attribute {:s} not found, revert to {:s}'.format(attr, keys[3]))
             attr = keys[3]
-            print('Attribute not found, revert to {:s}'.format(attr))
         if len(self.meshResults) > 0:
             mesh = self.meshResults[index]
             if self.typ[-1] == '2': # 2D case
