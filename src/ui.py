@@ -5165,6 +5165,187 @@ combination of multiple sequence is accepted as well as importing a custom seque
         helpLayout.addWidget(helpLabel)
         tabHelp.setLayout(helpLayout)
 
+        
+        #%% CSD tab
+        self.csdTab = QTabWidget()
+        self.tabs.addTab(self.csdTab, 'CSD')
+        
+        # CSD Data
+        self.csdInstructions = QLabel('Current Source Density (CSD) are measurements collected using '
+                                'Mise-à-la-masse (MALM) method where one current electrode is '
+                                'connected to the trunk or stem of the plant and the other to '
+                                 'the ground. In this tab you can either generate synthetic '
+                                 'distribution of sources or import field data.')
+        self.csdInstructions.setWordWrap(True)
+        
+        self.csdForwardLabel = QLabel('Forward:')
+        self.csdForwardLevelLabel = QLabel('Number of levels:')
+        self.csdForwardLevel = QLineEdit('0,1,2')
+        self.csdForwardLevel.setToolTip('Level/Skip, comma separated')
+        self.csdForwardSourceLabel = QLabel('Sources:')
+        self.csdForwardSource = QLineEdit('1,0,-0.5,1') # TODO put it in an interactive table
+        self.csdForwardNoiseLabel = QLabel('Noise [%]:')
+        self.csdForwardNoise = QLineEdit('5')
+        self.csdForwardNoise.setValidator(QDoubleValidator())
+        
+        def csdForwardBtnFunc():
+            source = [float(a) for a in self.csdForwardSource.text().split()]
+            sources = [tuple(source)]
+            noise = float(self.csdForwardNoise.text())
+            self.r2.forwardCSD(sources=sources, noise=noise)
+            # TODO show the results as pseudo-section
+        self.csdForwardBtn = QPushButton('Generate Data')
+        self.csdForwardBtn.clicked.connect(csdForwardBtnFunc)
+        
+        self.csdImportLabel = QLabel('Import Data:') 
+        def csdImportBtnFunc():
+            fname, _ = QFileDialog.getOpenFileName(self.csdTab,'Open File', self.datadir)
+            if fname != '':
+                self.csdImportBtn.setText(os.path.basename(fname))
+                ftype = 'ProtocolIP' if self.typ[0] == 'c' else 'ProtocolDC'
+                self.createSurvey(fname, ftype=ftype)
+        self.csdImportBtn = QPushButton('Select file')
+        self.csdImportBtn.setToolTip('Select a protocol.dat with CSD data')
+        self.csdImportBtn.clicked.connect(csdImportBtnFunc)
+       
+        
+        # CSD Inversion
+        self.gridLabel = QLabel('Build a grid of potential sources. Set Start, End and number of samples for each direction.')
+        self.gridLabel.setWordWrap(True)
+        self.gridxLabel = QLabel('X:')
+        self.gridxStart = QLineEdit('0')
+        self.gridxStart.setValidator(QDoubleValidator())
+        self.gridxStart.setToolTip('Start of grid in the X direction')
+        self.gridxEnd = QLineEdit('1')
+        self.gridxEnd.setValidator(QDoubleValidator())
+        self.gridxEnd.setToolTip('End of grid in the X direction')
+        self.gridxN = QLineEdit('10')
+        self.gridxN.setValidator(QIntValidator())
+        self.gridxN.setToolTip('Number of samples in the X direction')
+        self.gridyLabel = QLabel('Y:')
+        self.gridyStart = QLineEdit('0')
+        self.gridyStart.setValidator(QDoubleValidator())
+        self.gridyStart.setToolTip('Start of grid in the Y direction (leave 0 if 2D)')
+        self.gridyEnd = QLineEdit('0')
+        self.gridyEnd.setValidator(QDoubleValidator())
+        self.gridyEnd.setToolTip('End of grid in the Y direction (leave 0 if 2D)')
+        self.gridyN = QLineEdit('1')
+        self.gridyN.setValidator(QIntValidator())
+        self.gridyN.setToolTip('Number of samples in the Y direction (leave 1 if 2D)')
+        self.gridzLabel = QLabel('Z:')
+        self.gridzStart = QLineEdit('-0.5')
+        self.gridzStart.setValidator(QDoubleValidator())
+        self.gridzStart.setToolTip('Start of grid in the Z direction')
+        self.gridzEnd = QLineEdit('-2')
+        self.gridzEnd.setValidator(QDoubleValidator())
+        self.gridzEnd.setToolTip('End of grid in the Z direction')
+        self.gridzN = QLineEdit('4')
+        self.gridzN.setValidator(QIntValidator())
+        self.gridzN.setToolTip('Number of samples in the Z direction.')
+        
+        def csdInvertBtnFunc():            
+            # check if we kill or invert
+            if self.invertBtn.text() == 'Invert':
+                self.invertParallel2 = True
+                self.invertBtn.setStyleSheet('background-color: red')
+                self.invertBtn.setText('Kill')
+            else:
+                print('killing...', end='')
+                self.project.invertParallel2 = False # not sure about that
+                if self.project.proc is not None:
+                    self.project.proc.kill()
+                print('done')
+                self.invertBtn.setStyleSheet('background-color: green')
+                self.invertBtn.setText('Invert')
+                return
+            
+            # check arguments
+            objs = [self.gridxStart, self.gridxEnd, self.gridyStart, self.gridyEnd,
+                   self.gridzStart, self.gridzEnd]
+            bounds = []
+            for obj in objs:
+                try:
+                    bounds.append(float(obj.text()))
+                except Exception as e:
+                    self.errorDump("Invalid argument in grid bounds")
+                    self.invertBtn.setStyleSheet('background-color: green')
+                    self.invertBtn.setText('Invert')
+                    return
+            objs2 = [self.gridxN, self.gridyN, self.gridzN]
+            nsample = []
+            for obj in objs2:
+                try:
+                    nsample.append(float(obj.text()))
+                except Exception as e:
+                    self.errorDump("Invalid argument in grid number of samples (> 0)")
+                    self.invertBtn.setStyleSheet('background-color: green')
+                    self.invertBtn.setText('Invert')
+                    return
+            grid = [(bounds[0], bounds[1], nsample[0]),
+                    (bounds[2], bounds[3], nsample[1]),
+                    (bounds[4], bounds[5], nsample[2])]
+            self.project.invertCSD(grid=grid, dump=csdLogText)
+            self.mwCSD.plot(self.project.showCSD)
+            self.invertBtn.setStyleSheet('background-color: green')
+            self.invertBtn.setText('Invert')
+            
+        self.csdInvertBtn = QPushButton('Invert')
+        self.csdInvertBtn.setStyleSheet('background-color:green')
+        self.csdInvertBtn.clicked.connect(csdInvertBtnFunc)
+        
+        def csdLogText(arg):
+            cursor = self.csdLog.textCursor()
+            cursor.movePosition(cursor.End)
+            cursor.insertText(arg)
+            self.logText.ensureCursorVisible()
+            QApplication.processEvents()
+        self.csdLog = QTextEdit()
+        self.csdLog.setReadOnly(True)
+        
+        self.mwCSD = MatplotlibWidget() # maybe add pyvista plotter?
+        
+        
+        # layout
+        csdLayout = QVBoxLayout()
+        csdLayout.addWidget(self.csdInstructions)
+        
+        csdInputLayout = QHBoxLayout()
+        csdInputLayout.addWidget(self.csdForwardLabel)
+        csdInputLayout.addWidget(self.csdForwardSourceLabel)
+        csdInputLayout.addWidget(self.csdForwardSource)
+        csdInputLayout.addWidget(self.csdForwardNoiseLabel)
+        csdInputLayout.addWidget(self.csdForwardNoise)
+        csdInputLayout.addWidget(self.csdForwardLevelLabel)
+        csdInputLayout.addWidget(self.csdForwardLevel)
+#         csdInputLayout.addWidget(self.csdImportSequence)
+
+        csdInputLayout.addWidget(self.csdForwardBtn)
+        csdInputLayout.addWidget(self.csdImportLabel)
+        csdInputLayout.addWidget(self.csdImportBtn)
+        csdLayout.addLayout(csdInputLayout)
+        
+        csdLayout.addWidget(self.gridLabel)
+        csdInvLayout = QHBoxLayout()
+        csdInvLayout.addWidget(self.gridxLabel)
+        csdInvLayout.addWidget(self.gridxStart)
+        csdInvLayout.addWidget(self.gridxEnd)
+        csdInvLayout.addWidget(self.gridxN)
+        csdInvLayout.addWidget(self.gridyLabel)
+        csdInvLayout.addWidget(self.gridyStart)
+        csdInvLayout.addWidget(self.gridyEnd)
+        csdInvLayout.addWidget(self.gridyN)
+        csdInvLayout.addWidget(self.gridzLabel)
+        csdInvLayout.addWidget(self.gridzStart)
+        csdInvLayout.addWidget(self.gridzEnd)
+        csdInvLayout.addWidget(self.gridzN)
+        csdInvLayout.addWidget(self.csdInvertBtn)
+        csdLayout.addLayout(csdInvLayout)
+        
+        csdLayout.addWidget(self.csdLog)
+        csdLayout.addWidget(self.mwCSD)
+        
+        self.csdTab.setLayout(csdLayout)
+        
 
         #%% About tab
 
