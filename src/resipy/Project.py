@@ -2258,6 +2258,30 @@ class Project(object): # Project master class instanciated by the GUI
             self.surveys[0].write2protocol(os.path.join(self.dirname, 'protocol.dat'),
                         err=err, ip=ipBool, errTot=errTot, threed=threed)
 
+            
+    def _getCommand(self):
+        """Get platform specific command for running binaries.
+        """
+        exePath = os.path.join(self.apiPath, 'exe', self.typ + '.exe')
+        if OS == 'Windows':
+            cmd = [exePath]
+        elif OS == 'Darwin':
+            winetxt = 'wine'
+            if getMacOSVersion():
+                winetxt = 'wine64'
+            winePath = []
+            wine_path = Popen(['which', winetxt], stdout=PIPE, shell=False, universal_newlines=True)#.communicate()[0]
+            for stdout_line in iter(wine_path.stdout.readline, ''):
+                winePath.append(stdout_line)
+            if winePath != []:
+                cmd = ['%s' % (winePath[0].strip('\n')), exePath]
+            else:
+                cmd = ['/usr/local/bin/%s' % winetxt, exePath]
+        else:
+            cmd = ['wine', exePath]
+        return cmd
+
+    
 
     def runR2(self, dirname='', dump=None):
         """Run the executable in charge of the inversion.
@@ -2280,25 +2304,7 @@ class Project(object): # Project master class instanciated by the GUI
 
         # get R2.exe path
         with cd(dirname):
-            exePath = os.path.join(self.apiPath, 'exe', exeName)
-    
-            if OS == 'Windows':
-                cmd = [exePath]
-            elif OS == 'Darwin':
-                winetxt = 'wine'
-                if getMacOSVersion():
-                    winetxt = 'wine64'
-                winePath = []
-                wine_path = Popen(['which', winetxt], stdout=PIPE, shell=False, universal_newlines=True)#.communicate()[0]
-                for stdout_line in iter(wine_path.stdout.readline, ''):
-                    winePath.append(stdout_line)
-                if winePath != []:
-                    cmd = ['%s' % (winePath[0].strip('\n')), exePath]
-                else:
-                    cmd = ['/usr/local/bin/%s' % winetxt, exePath]
-            else:
-                cmd = ['wine',exePath]
-    
+            cmd = self._getCommand()
             if OS == 'Windows':
                 startupinfo = subprocess.STARTUPINFO()
                 startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
@@ -2417,23 +2423,7 @@ class Project(object): # Project master class instanciated by the GUI
                                         self.typ + '_' + name + '.in')
                 shutil.copy(r2inFile, os.path.join(wd, self.typ + '.in'))
 
-        if OS == 'Windows':
-            cmd = [exePath]
-        elif OS == 'Darwin':
-            winetxt = 'wine'
-            if getMacOSVersion():
-                winetxt = 'wine64'
-            winePath = []
-            wine_path = Popen(['which', winetxt], stdout=PIPE, shell=False, universal_newlines=True)#.communicate()[0]
-            for stdout_line in iter(wine_path.stdout.readline, ''):
-                winePath.append(stdout_line)
-            if winePath != []:
-                cmd = ['%s' % (winePath[0].strip('\n')), exePath]
-            else:
-                cmd = ['/usr/local/bin/%s' % winetxt, exePath]
-        else:
-            cmd = ['wine',exePath]
-
+        cmd = self._getCommand()
         if OS == 'Windows':
             startupinfo = subprocess.STARTUPINFO()
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
@@ -2710,7 +2700,7 @@ class Project(object): # Project master class instanciated by the GUI
         
         
         
-    def forwardCSD(self, sources=[(1.0, 0.0, -1.0, 1.0)], noise=0.05):
+    def forwardCSD(self, sources=[(1.0, 0.0, -1.0, 1.0)], noise=0.05, iplot=False):
         """Forward Current Source Density (CSD) from Mise-à-la-masse (MALM).
         
         Parameters
@@ -2738,7 +2728,12 @@ class Project(object): # Project master class instanciated by the GUI
             dist = cdist(np.array(source[:3])[None,:], nodes)
             imin = np.argmin(dist, axis=1)[0]
             print('Closest node at {:.2f}, {:.2f}, {:.2f}'.format(*nodes[imin,:]))
-
+            
+            if iplot:
+                fig, ax = plt.subplots()
+                self.mesh.show(attr='res0', ax=ax)
+                ax.scatter(nodes[imin,0], nodes[imin,2], s=35, color='red')
+            
             # setup the nodes that are the sources of the current        
             self.param['node_elec'][1][1] = imin # the source to be found (CHANGE HERE)
             self.forward()
@@ -2760,7 +2755,7 @@ class Project(object): # Project master class instanciated by the GUI
         
     
     def invertCSD(self, grid=[(1,5,5),(0,0,1),(-0.5,-2,3)], dump=None,
-                  njobs=8):
+                  njobs=8, x0=None, weightType='sqrt'):
         """Invert Current Source Density (CSD) from Mise-à-la-masse (MALM).
         
         Parameters
@@ -2779,9 +2774,17 @@ class Project(object): # Project master class instanciated by the GUI
         njobs : int, optional
             Number of process for the simulation of current sources. By 
             default 8 processes available are used.
+        x0 : numpy.array of float
+            Initial guess of the sources.
+        weightType : str, optional
+            Either 'const', 'sqrt' or 'recip' for weighting matrix. 'const'
+            put 1 on diagonal. 'sqrt' put 1/sqrt(b) on diagonal. 'recip'
+            use 1/sqrt(reciprocalError) on diagonal.
         """
-        print('TODO the implementation of this method needs to be checked!')
-        from scipy.linalg import lstsq
+        t0 = time.time()
+        print('!!!WARNING the implementation of this method needs to be checked!!!')
+#         from scipy.linalg import lstsq
+        from scipy.optimize import lsq_linear, least_squares
 
         # check arguments
         for a in grid:
@@ -2792,7 +2795,6 @@ class Project(object): # Project master class instanciated by the GUI
                 print(x, end='')
                 
         # create a regular grid of possible sources
-        dump('Building grid of potential sources...')
         dx = np.linspace(*grid[0])
         dy = np.linspace(*grid[1])
         dz = np.linspace(*grid[2])
@@ -2815,155 +2817,206 @@ class Project(object): # Project master class instanciated by the GUI
                   'are on the same node. Reduce source density or refine'
                   'mesh.'.format(a))
             return
-        else:
-            dump('done\n')
 
-        # save it as it's overwritten by simulations
-        Robs = self.surveys[0].df['resist'].values.copy()
-        nquad = len(Robs) # number of quadrupoles
-        nsrc = len(imin) # number of potential sources
-        
-        # build top part of the matrix A (time consuming part)
-        # compute response for each possible source
-        dump('Running simulations...')
-        def fdump(x): # fake dump to avoid seeing output of each run
-            pass
-        Rsim = np.zeros((nquad, nsrc))
-        
-        # --------------- sequential simulations
-#         for i, d in enumerate(imin):
-#             dump('\rRunning simulations...{:d}/{:d}'.format(i+1,nsrc))
-#             self.param['node_elec'][1][1] = d
-#             self.forward(dump=fdump)
-#             Rsim[:,i] = self.surveys[0].df['resist'].values
-        
-        # --------------- parallel simulations
-        # first simulation done sequentially (so all files are copied fine)
-        dump('\rRunning simulations...{:d}/{:d}'.format(1,nsrc))
-        self.param['node_elec'][1][1] = imin[0]
-        self.forward(dump=fdump)
-        self.iForward = False
-        Rsim[:,0] = self.surveys[0].df['resist'].values
-        
-        # create path to executable and cmd
-        exePath = os.path.join(self.apiPath, 'exe', self.typ + '.exe')
-        if OS == 'Windows':
-            cmd = [exePath]
-        elif OS == 'Darwin':
-            winetxt = 'wine'
-            if getMacOSVersion():
-                winetxt = 'wine64'
-            winePath = []
-            wine_path = Popen(['which', winetxt], stdout=PIPE, shell=False, universal_newlines=True)#.communicate()[0]
-            for stdout_line in iter(wine_path.stdout.readline, ''):
-                winePath.append(stdout_line)
-            if winePath != []:
-                cmd = ['%s' % (winePath[0].strip('\n')), exePath]
-            else:
-                cmd = ['/usr/local/bin/%s' % winetxt, exePath]
-        else:
-            cmd = ['wine',exePath]
-        if OS == 'Windows':
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-
-        # create all the working directories
-        toMove = ['mesh.dat', 'mesh3d.dat','R2.in','cR2.in',
-                  'R3t.in', 'cR3t.in', 'res0.dat','resistivity.dat',
-                  'Start_res.dat', 'protocol.dat']
-        wds = []
-        for i, d in enumerate(imin[1:]):
-            self.param['node_elec'][1][1] = imin[i]
-            self.write2in()
-            wd = os.path.join(self.dirname, str(i+1))
-            if os.path.exists(wd):
-                shutil.rmtree(wd)
-            os.mkdir(wd)            
-            for f in toMove:
-                file = os.path.join(self.dirname, 'fwd', f)
-                if os.path.exists(file):
-                    shutil.copy(file, os.path.join(wd, f))
-            wds.append(wd)
-        wds2 = wds.copy()
-
-        # create essential attribute
-        ncores = njobs
-        self.irunParallel2 = True
-        self.procs = []
-        self.proc = ProcsManagement(self) # to kill all processes in // if needed
-
-        # run in // (http://code.activestate.com/recipes/577376-simple-way-to-execute-multiple-process-in-parallel/)
-        # In an infinite loop, will run an number of process (according to the number of cores)
-        # the loop will check when they finish and start new ones.
-        def done(p):
-            return p.poll() is not None
-
-        c = 1
-        dump('\rRunning simulations...{:d}/{:d}'.format(c, nsrc))
-        while self.irunParallel2:
-            while wds and len(self.procs) < ncores:
-                wd = wds.pop()
-                if OS == 'Windows':
-                    p = Popen(cmd, cwd=wd, stdout=PIPE, shell=False, universal_newlines=True, startupinfo=startupinfo)
-                else:
-                    p = Popen(cmd, cwd=wd, stdout=PIPE, shell=False, universal_newlines=True)
-                self.procs.append(p)
-                
-            for p in self.procs:
-                if done(p):
-                    self.procs.remove(p)
-                    c = c+1
-                    dump('\rRunning simulations...{:d}/{:d}'.format(c, nsrc))
-
-            if not self.procs and not wds:
-                break
-            else:
-                time.sleep(0.05) # (g) why do we need that again?
-
-        # retrieve data
-        ip = True if self.typ[0] == 'c' else False
-        for i, wd in enumerate(wds2):
-            elec, df = protocolParser(os.path.join(wd, self.typ + '_forward.dat'), ip=ip, fwd=True)
-            Rsim[:,i+1] = df['resist'].values # TODO no IP implemented in this approach...
-        [shutil.rmtree(wd) for wd in wds2]
-        dump('...done\n')
-        
-        dump('Building matrices and solving...')
-        # buiding matrix A
-        A = np.zeros((nquad + 1  + nsrc, nsrc))
-        A[:nquad,:] = Rsim
-        A[nquad,:] = 1 # charge conservation
-        L1 = np.eye(nsrc) + np.eye(nsrc, k=-1)*-1
-        L1[0,1] = -1
-        A[nquad+1:,:] = L1
-        
-        # building matrix b
-        b = np.zeros((nquad + 1 + nsrc, 1))
-        b[:nquad,0] = Robs
-        b[nquad,0] = 1 # charge conservation
-
-#         print(A)
-#         print(b)
-        # solving
-        x, residues, rank, singularValues = lstsq(A, b)#Rsim, Robs)
-        
-        # store results in CSD dataframe
+        # dataframe to store the results
         self.csd = pd.DataFrame()
         self.csd['x'] = nodes[imin,0].copy()
         self.csd['y'] = nodes[imin,1].copy()
         self.csd['z'] = nodes[imin,2].copy()
-        self.csd['csd'] = x
-                    
-        dump('done\n')
+            
+        for i, survey in enumerate(self.surveys):
+            # save observations as they are overwritten by simulations
+            Robs = survey.df['resist'].values.copy()
+            nquad = len(Robs) # number of quadrupoles
+            nsrc = len(imin) # number of potential sources
+
+            # build top part of the matrix A (time consuming part)
+            # compute response for each possible source
+            dump('Running simulations...')
+            def fdump(x): # fake dump to avoid seeing output of each run
+                pass
+            Rsim = np.zeros((nquad, nsrc))
         
-                    
+            # --------------- sequential simulations
+    #         for i, d in enumerate(imin):
+    #             dump('\rRunning simulations...{:d}/{:d}'.format(i+1,nsrc))
+    #             self.param['node_elec'][1][1] = d
+    #             self.forward(dump=fdump)
+    #             Rsim[:,i] = self.surveys[0].df['resist'].values
+
+            # --------------- parallel simulations
+            # first simulation done sequentially (so all files are copied fine)
+            self.param['node_elec'][1][1] = imin[0]
+            self.forward(dump=fdump)
+            self.iForward = False
+            Rsim[:,0] = self.surveys[0].df['resist'].values.copy()
+            self.surveys[0].df['resist'] = Robs.copy() # restoring previous copy
+
+            # create all the working directories
+            cmd = self._getCommand()
+            fparam = self.param.copy()
+            fparam['job_type'] = 0
+            fparam['num_regions'] = 0
+            fparam['res0File'] = 'resistivity.dat' # just starting resistivity
+            toMove = ['mesh.dat', 'mesh3d.dat', 'res0.dat','resistivity.dat',
+                      'Start_res.dat', 'protocol.dat']
+            wds = []
+            for j, d in enumerate(imin[1:]):
+                wd = os.path.join(self.dirname, str(j+1))
+                if os.path.exists(wd):
+                    shutil.rmtree(wd)
+                os.mkdir(wd)            
+                for f in toMove:
+                    file = os.path.join(self.dirname, 'fwd', f)
+                    if os.path.exists(file):
+                        shutil.copy(file, os.path.join(wd, f))
+                fparam['node_elec'][1][1] = d
+                write2in(fparam, wd, typ=self.typ)
+                wds.append(wd)
+            wds2 = wds.copy()
+
+            # create essential attribute
+            ncores = njobs
+            self.irunParallel2 = True
+            self.procs = []
+            self.proc = ProcsManagement(self) # to kill all processes in // if needed
+
+            # run in // (http://code.activestate.com/recipes/577376-simple-way-to-execute-multiple-process-in-parallel/)
+            # In an infinite loop, will run an number of process (according to the number of cores)
+            # the loop will check when they finish and start new ones.
+            def done(p):
+                return p.poll() is not None
+
+            c = 1
+            dump('\rRunning simulations...{:d}/{:d}'.format(c, nsrc))
+            while self.irunParallel2:
+                while wds and len(self.procs) < ncores:
+                    wd = wds.pop()
+                    if OS == 'Windows':
+                        p = Popen(cmd, cwd=wd, stdout=PIPE, shell=False, universal_newlines=True, startupinfo=startupinfo)
+                    else:
+                        p = Popen(cmd, cwd=wd, stdout=PIPE, shell=False, universal_newlines=True)
+                    self.procs.append(p)
+
+                for p in self.procs:
+                    if done(p):
+                        self.procs.remove(p)
+                        c = c+1
+                        dump('\rRunning simulations...{:d}/{:d}'.format(c, nsrc))
+
+                if not self.procs and not wds:
+                    break
+                else:
+                    time.sleep(0.05) # (g) why do we need that again?
+
+            # retrieve data
+            ip = True if self.typ[0] == 'c' else False
+            for j, wd in enumerate(wds2):
+                elec, df = protocolParser(os.path.join(wd, self.typ + '_forward.dat'), ip=ip, fwd=True)
+                Rsim[:,j+1] = df['resist'].values # TODO no IP implemented in this approach...
+            [shutil.rmtree(wd) for wd in wds2]
+
+            # buiding matrix A
+            A = np.zeros((nquad + 1  + nsrc, nsrc))
+            A[:nquad,:] = Rsim
+            A[nquad,:] = 1 # charge conservation constrain
+
+            # building regularization
+            reg = np.eye(nsrc)
+            dist = cdist(sources, sources)
+            kn = 3 # consider the 3 closest neightbours
+            for j in range(nsrc):
+                isort = np.argsort(dist[:,j]) # first one is itself
+                ie = isort[1:1+kn]
+                w = dist[ie,j]
+                reg[j,ie] = -w/np.sum(w) 
+            
+#             L2 = np.eye(nsrc)*2 + np.eye(nsrc, k=-1)*-1 + np.eye(nsrc, k=1)*1
+#             L2[0,0] = 1
+#             L2[-1,-1] = -1
+            L1 = np.eye(nsrc)*0.1 + np.eye(nsrc, k=-1)*-0.1
+            L1[0,1] = -0.1
+            A[nquad+1:,:] = reg
+
+            # building matrix b
+            b = np.zeros((nquad + 1 + nsrc, 1))
+            b[:nquad,0] = Robs
+            b[nquad,0] = 1 # charge conservation constrain
+
+            # buidling weights
+            wA = np.diag(np.ones(A.shape[0]))
+            wA[nquad+1, nquad+1] = 1000 # more weight on constrain
+            if weightType == 'const':
+                wb = np.diag(np.ones(b.shape[0]))
+            elif weightType == 'sqrt':
+                a = np.ones(b.shape[0])
+                a[:nquad+1] = 1/np.sqrt(np.abs(b.flatten()[:nquad+1]))
+                wb = np.diag(a) # TODO this doesn't do charge conservation ... so maybe normalized it all?
+            elif weightType == 'recip':
+                pass
+            # TODO could be from reciprocal measurements
+
+    #         print(A)
+    #         print(b)
+#             fig, ax = plt.subplots()
+#             ax.plot(Robs, 'ko')
+#             ax.plot(Rsim,'.')
+            
+            # solving
+    #         x, residues, rank, singularValues = lstsq(np.dot(wA,A), np.dot(wb,b))
+            if x0 is None:
+                res = lsq_linear(np.dot(wA,A), np.dot(wb,b).flatten(), bounds=(0,1))
+                x = res.x
+            else:
+                def func(x): # untested
+                    return (np.dot(wb,b) - np.dot(np.dot(wA,A),x))
+                res = least_squares(func, x0, bounds=(0,1))
+
+            # store results in CSD dataframe
+            self.csd['csd_{:d}'.format(i+1)] = x
+            self.surveys[i].df['resInvPred'] = np.dot(A,x).flatten()[:nquad] # only consider obs? no reg or con?
+            self.surveys[i].df['resInvError'] = self.surveys[i].df['resist'] - self.surveys[i].df['resInvPred']
+        
+            dump('...done ({:.2}s, sum={:.4f})\n'.format(time.time() - t0, np.sum(x)))
+        
+        
+        
+    def showMisfitCSD(self, index=0, ax=None):
+        """Show 1:1 line of CSD misfit.
+        
+        Parameters
+        ----------
+        index : int, optional
+            Index of the surveys. Default (index = 0) is first survey.
+        ax : matplotlib.Axes, optional
+            If provided, the graph will be plotted against.
+        """
+        if ax is None:
+            fig, ax = plt.subplots()
+        else:
+            fig = ax.figure
+        survey = self.surveys[index]
+        obs = survey.df['resist'].abs().values
+        pred = survey.df['resInvPred'].abs().values
+        ax.set_xlabel('Observations [$\Omega$]')
+        ax.set_ylabel('Predictions [$\Omega$]')
+        vmin = np.min(np.r_[obs, pred])
+        vmax = np.max(np.r_[obs, pred])
+        ax.loglog([vmin,vmax], [vmin,vmax], 'r-')
+        ax.loglog(obs, pred, '.')
+        rms = np.sqrt(np.sum((obs-pred)**2)/len(obs))
+        ax.set_title('RMS: {:.2e} $\Omega$'.format(rms))
+        
     
-    def showCSD(self, csdmin=None, csdmax=None, csdcmap='viridis', 
+    
+    def showCSD(self, index=0, csdmin=None, csdmax=None, csdcmap='viridis', 
                 ax=None, contour=False, res=True, **kwargs):
         """Show current density distribution (CSD).
         
         Parameters
         ----------
+        index : int, optional
+            Index of the surveys. Default (index = 0) is first survey.
         csdmin : float, optional
             Min value of colorscale.
         csdmax : float, optional
@@ -2997,9 +3050,9 @@ class Project(object): # Project master class instanciated by the GUI
             else:
                 self.showResults(ax=ax, **kwargs)
         if contour:
-            cax = ax.tricontourf(self.csd['x'], self.csd['z'], self.csd['csd'])
+            cax = ax.tricontourf(self.csd['x'], self.csd['z'], self.csd['csd_{:d}'.format(index+1)])
         else:
-            cax = ax.scatter(self.csd['x'], self.csd['z'], 50, self.csd['csd'], 
+            cax = ax.scatter(self.csd['x'], self.csd['z'], 50, self.csd['csd_{:d}'.format(index+1)], 
                          cmap=csdcmap, vmin=csdmin, vmax=csdmax)
         fig.colorbar(cax, label='Current Source Density')
 
