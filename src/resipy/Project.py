@@ -3040,7 +3040,7 @@ class Project(object): # Project master class instanciated by the GUI
             self.surveys[i].df['resInvPred'] = np.dot(A,x).flatten()[:nquad] # only consider obs? no reg or con?
             self.surveys[i].df['resInvError'] = self.surveys[i].df['resist'] - self.surveys[i].df['resInvPred']
         
-            dump('...done ({:.2}s, sum={:.4f})\n'.format(time.time() - t0, np.sum(x)))
+            dump('...done ({:.2f}s, sum={:.4f})\n'.format(time.time() - t0, np.sum(x)))
         
         
         

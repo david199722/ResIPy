@@ -5187,6 +5187,16 @@ combination of multiple sequence is accepted as well as importing a custom seque
         self.csdForwardNoise.setValidator(QDoubleValidator())
         self.csdForwardLogLabel = QLabel('0 measurements')
         
+        def csdImportSeqBtnFunc():
+            fname, _ = QFileDialog.getOpenFileName(self.csdTab,'Open File', self.datadir)
+            if fname != '':
+                self.project.importSequence(fname)
+                self.csdImportSeqBtn.setText(os.path.basename(fname))
+                self.csdForwardLogLabel.setText('{:d} quadrupoles'.format(self.project.sequence.shape[0]))
+        self.csdImportSeqBtn = QPushButton('Import Sequence')
+        self.csdImportSeqBtn.setToolTip('Import a .csv sequence (ABMN) without headers')
+        self.csdImportSeqBtn.clicked.connect(csdImportSeqBtnFunc)
+        
         def csdForwardBtnFunc():
             self.csdForwardBtn.setText('Running...')
             QApplication.processEvents()
@@ -5250,21 +5260,25 @@ combination of multiple sequence is accepted as well as importing a custom seque
         self.gridzN.setValidator(QIntValidator())
         self.gridzN.setToolTip('Number of samples in the Z direction.')
         
+        self.wregLabel = QLabel('Smoothness Weight:')
+        self.wreg = QLineEdit('1e-3')
+        self.wreg.setValidator(QDoubleValidator())
+        
         def csdInvertBtnFunc():
             self.csdLog.setText('')
             # check if we kill or invert
-            if self.invertBtn.text() == 'Invert':
-                self.invertParallel2 = True
-                self.invertBtn.setStyleSheet('background-color: red')
-                self.invertBtn.setText('Kill')
+            if self.csdInvertBtn.text() == 'Invert':
+                self.csdInvertParallel2 = True
+                self.csdInvertBtn.setStyleSheet('background-color: red')
+                self.csdInvertBtn.setText('Kill')
             else:
                 print('killing...', end='')
                 self.project.invertParallel2 = False # not sure about that
                 if self.project.proc is not None:
                     self.project.proc.kill()
                 print('done')
-                self.invertBtn.setStyleSheet('background-color: green')
-                self.invertBtn.setText('Invert')
+                self.csdInvertBtn.setStyleSheet('background-color: green')
+                self.csdInvertBtn.setText('Invert')
                 return
             
             # check arguments
@@ -5276,8 +5290,8 @@ combination of multiple sequence is accepted as well as importing a custom seque
                     bounds.append(float(obj.text()))
                 except Exception as e:
                     self.errorDump("Invalid argument in grid bounds")
-                    self.invertBtn.setStyleSheet('background-color: green')
-                    self.invertBtn.setText('Invert')
+                    self.csdInvertBtn.setStyleSheet('background-color: green')
+                    self.csdInvertBtn.setText('Invert')
                     return
             objs2 = [self.gridxN, self.gridyN, self.gridzN]
             nsample = []
@@ -5286,19 +5300,20 @@ combination of multiple sequence is accepted as well as importing a custom seque
                     nsample.append(int(obj.text()))
                 except Exception as e:
                     self.errorDump("Invalid argument in grid number of samples (> 0)")
-                    self.invertBtn.setStyleSheet('background-color: green')
-                    self.invertBtn.setText('Invert')
+                    self.csdInvertBtn.setStyleSheet('background-color: green')
+                    self.csdInvertBtn.setText('Invert')
                     return
             grid = [(bounds[0], bounds[1], nsample[0]),
                     (bounds[2], bounds[3], nsample[1]),
                     (bounds[4], bounds[5], nsample[2])]
-            self.project.invertCSD(grid=grid, dump=csdLogText)
+            wreg = float(self.wreg.text())
+            self.project.invertCSD(grid=grid, dump=csdLogText, wreg=wreg)
             if self.project.csd.shape[0] == 0:
                 self.errorDump('Some sources on the same node. Reduce source density or refine mesh.')
             else:
                 self.mwCSD.plot(self.project.showCSD)
-            self.invertBtn.setStyleSheet('background-color: green')
-            self.invertBtn.setText('Invert')
+            self.csdInvertBtn.setStyleSheet('background-color: green')
+            self.csdInvertBtn.setText('Invert')
             
         self.csdInvertBtn = QPushButton('Invert')
         self.csdInvertBtn.setStyleSheet('background-color:green')
@@ -5306,7 +5321,7 @@ combination of multiple sequence is accepted as well as importing a custom seque
         
         def csdLogText(arg):
             cursor = self.csdLog.textCursor()
-#             cursor.movePosition(cursor.End)
+            cursor.movePosition(cursor.End)
             cursor.insertText(arg)
             self.logText.ensureCursorVisible()
             QApplication.processEvents()
@@ -5329,7 +5344,7 @@ combination of multiple sequence is accepted as well as importing a custom seque
         csdForwardLayout.addWidget(self.csdForwardSource)
         csdForwardLayout.addWidget(self.csdForwardNoiseLabel)
         csdForwardLayout.addWidget(self.csdForwardNoise)
-#         csdInputLayout.addWidget(self.csdImportSequence)
+        csdForwardLayout.addWidget(self.csdImportSeqBtn)
         csdForwardLayout.addWidget(self.csdForwardBtn)
         csdForwardGroup.setLayout(csdForwardLayout)
         csdInputLayout.addWidget(csdForwardGroup, 60)
@@ -5361,6 +5376,8 @@ combination of multiple sequence is accepted as well as importing a custom seque
         csdInvLayout.addWidget(self.gridzStart)
         csdInvLayout.addWidget(self.gridzEnd)
         csdInvLayout.addWidget(self.gridzN)
+        csdInvLayout.addWidget(self.wregLabel)
+        csdInvLayout.addWidget(self.wreg)
         csdInvLayout.addWidget(self.csdInvertBtn)
         csdLayout.addLayout(csdInvLayout)
         
