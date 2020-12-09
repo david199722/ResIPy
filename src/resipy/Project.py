@@ -2753,10 +2753,131 @@ class Project(object): # Project master class instanciated by the GUI
         self.surveys[0].df['resist'] = Robs
         
         
+        
+    def _runSimulationCSD(self, isrc, index=0, dump=None, njobs=8):
+        """Run simulations to prepare CSD inversion.
+        
+        Parameters
+        ----------
+        isrc : list of int
+            List of index of node where to simulate the sources.
+        index : int, optional
+            Index of survey for which CSD simulations are computed.
+        dump : function, optional
+            If provided, string output will be passed to it. If `None`,
+            `print()` will be used instead.
+        njobs : int, optional
+            Number of process for the simulation of current sources. By 
+            default 8 processes available are used.
+            
+        Returns
+        -------
+        Robs : numpy.array
+            Array of observed resistances (`self.surveys[0].df['resist']`).
+        Rsim : numpy.array
+            Array of simulated resistances for potential current sources.
+        """
+        # save observations as they are overwritten by simulations
+        Robs = self.surveys[index].df['resist'].values.copy()
+        nquad = len(Robs) # number of quadrupoles
+        nsrc = len(isrc) # number of potential sources
+
+        # build top part of the matrix A (time consuming part)
+        # compute response for each possible source
+        dump('Running simulations...')
+        def fdump(x): # fake dump to avoid seeing output of each run
+            pass
+        Rsim = np.zeros((nquad, nsrc))
+
+        # --------------- sequential simulations
+#         for i, d in enumerate(imin):
+#             dump('\rRunning simulations...{:d}/{:d}'.format(i+1,nsrc))
+#             self.param['node_elec'][1][1] = d
+#             self.forward(dump=fdump)
+#             Rsim[:,i] = self.surveys[0].df['resist'].values
+
+        # --------------- parallel simulations
+        # first simulation done sequentially (so all files are copied fine)
+        self.param['node_elec'][1][1] = isrc[0]
+        self.forward(dump=fdump)
+        self.iForward = False
+        Rsim[:,0] = self.surveys[0].df['resist'].values.copy()
+        self.surveys[0].df['resist'] = Robs.copy() # restoring previous copy
+
+        # create all the working directories
+        cmd = self._getCommand()
+        fparam = self.param.copy()
+        fparam['job_type'] = 0
+        fparam['num_regions'] = 0
+        fparam['res0File'] = 'resistivity.dat' # just starting resistivity
+        toMove = ['mesh.dat', 'mesh3d.dat', 'res0.dat','resistivity.dat',
+                  'Start_res.dat', 'protocol.dat']
+        wds = []
+        for j, d in enumerate(isrc[1:]):
+            wd = os.path.join(self.dirname, str(j+1))
+            if os.path.exists(wd):
+                shutil.rmtree(wd)
+            os.mkdir(wd)            
+            for f in toMove:
+                file = os.path.join(self.dirname, 'fwd', f)
+                if os.path.exists(file):
+                    shutil.copy(file, os.path.join(wd, f))
+            fparam['node_elec'][1][1] = d
+            write2in(fparam, wd, typ=self.typ)
+            wds.append(wd)
+        wds2 = wds.copy()
+
+        # create essential attribute
+        ncores = njobs
+        self.irunParallel2 = True
+        self.procs = []
+        self.proc = ProcsManagement(self) # to kill all processes in // if needed
+
+        # run in // (http://code.activestate.com/recipes/577376-simple-way-to-execute-multiple-process-in-parallel/)
+        # In an infinite loop, will run an number of process (according to the number of cores)
+        # the loop will check when they finish and start new ones.
+        def done(p):
+            return p.poll() is not None
+
+        c = 1
+        dump('\rRunning simulations...{:d}/{:d}'.format(c, nsrc))
+        while self.irunParallel2:
+            while wds and len(self.procs) < ncores:
+                wd = wds.pop()
+                if OS == 'Windows':
+                    p = Popen(cmd, cwd=wd, stdout=PIPE, shell=False, universal_newlines=True, startupinfo=startupinfo)
+                else:
+                    p = Popen(cmd, cwd=wd, stdout=PIPE, shell=False, universal_newlines=True)
+                self.procs.append(p)
+
+            for p in self.procs:
+                if done(p):
+                    self.procs.remove(p)
+                    c = c+1
+                    dump('\rRunning simulations...{:d}/{:d}'.format(c, nsrc))
+
+            if not self.procs and not wds:
+                break
+            else:
+                time.sleep(0.05) # (g) why do we need that again?
+
+        # retrieve data
+        ip = True if self.typ[0] == 'c' else False
+        for j, wd in enumerate(wds2):
+            elec, df = protocolParser(os.path.join(wd, self.typ + '_forward.dat'), ip=ip, fwd=True)
+            Rsim[:,j+1] = df['resist'].values # TODO no IP implemented in this approach...
+        [shutil.rmtree(wd) for wd in wds2]
+        
+        return Robs, Rsim
+            
+            
     
     def invertCSD(self, grid=[(1,5,5),(0,0,1),(-0.5,-2,3)], dump=None,
-                  njobs=8, x0=None, weightType='sqrt'):
+                  njobs=8, x0=None, weightType='const', wreg=1, lcurve=[]):
         """Invert Current Source Density (CSD) from Mise-à-la-masse (MALM).
+        Based on Peruzzo et al. (2020), Imaging of plant current pathways
+        for non-invasive root Phenotyping using a newly developed 
+        electrical current source density approach
         
         Parameters
         ----------
@@ -2780,6 +2901,10 @@ class Project(object): # Project master class instanciated by the GUI
             Either 'const', 'sqrt' or 'recip' for weighting matrix. 'const'
             put 1 on diagonal. 'sqrt' put 1/sqrt(b) on diagonal. 'recip'
             use 1/sqrt(reciprocalError) on diagonal.
+        wreg : float, optional
+            Weight for regularization. Default is 1.
+        lcurve : list, optional
+            List of wreg values to try on an L-curve. If none, no L-curve is done.
         """
         t0 = time.time()
         print('!!!WARNING the implementation of this method needs to be checked!!!')
@@ -2823,99 +2948,13 @@ class Project(object): # Project master class instanciated by the GUI
         self.csd['x'] = nodes[imin,0].copy()
         self.csd['y'] = nodes[imin,1].copy()
         self.csd['z'] = nodes[imin,2].copy()
-            
-        for i, survey in enumerate(self.surveys):
-            # save observations as they are overwritten by simulations
-            Robs = survey.df['resist'].values.copy()
-            nquad = len(Robs) # number of quadrupoles
-            nsrc = len(imin) # number of potential sources
-
-            # build top part of the matrix A (time consuming part)
-            # compute response for each possible source
-            dump('Running simulations...')
-            def fdump(x): # fake dump to avoid seeing output of each run
-                pass
-            Rsim = np.zeros((nquad, nsrc))
+        nsrc = len(imin) # number of potential sources
         
-            # --------------- sequential simulations
-    #         for i, d in enumerate(imin):
-    #             dump('\rRunning simulations...{:d}/{:d}'.format(i+1,nsrc))
-    #             self.param['node_elec'][1][1] = d
-    #             self.forward(dump=fdump)
-    #             Rsim[:,i] = self.surveys[0].df['resist'].values
-
-            # --------------- parallel simulations
-            # first simulation done sequentially (so all files are copied fine)
-            self.param['node_elec'][1][1] = imin[0]
-            self.forward(dump=fdump)
-            self.iForward = False
-            Rsim[:,0] = self.surveys[0].df['resist'].values.copy()
-            self.surveys[0].df['resist'] = Robs.copy() # restoring previous copy
-
-            # create all the working directories
-            cmd = self._getCommand()
-            fparam = self.param.copy()
-            fparam['job_type'] = 0
-            fparam['num_regions'] = 0
-            fparam['res0File'] = 'resistivity.dat' # just starting resistivity
-            toMove = ['mesh.dat', 'mesh3d.dat', 'res0.dat','resistivity.dat',
-                      'Start_res.dat', 'protocol.dat']
-            wds = []
-            for j, d in enumerate(imin[1:]):
-                wd = os.path.join(self.dirname, str(j+1))
-                if os.path.exists(wd):
-                    shutil.rmtree(wd)
-                os.mkdir(wd)            
-                for f in toMove:
-                    file = os.path.join(self.dirname, 'fwd', f)
-                    if os.path.exists(file):
-                        shutil.copy(file, os.path.join(wd, f))
-                fparam['node_elec'][1][1] = d
-                write2in(fparam, wd, typ=self.typ)
-                wds.append(wd)
-            wds2 = wds.copy()
-
-            # create essential attribute
-            ncores = njobs
-            self.irunParallel2 = True
-            self.procs = []
-            self.proc = ProcsManagement(self) # to kill all processes in // if needed
-
-            # run in // (http://code.activestate.com/recipes/577376-simple-way-to-execute-multiple-process-in-parallel/)
-            # In an infinite loop, will run an number of process (according to the number of cores)
-            # the loop will check when they finish and start new ones.
-            def done(p):
-                return p.poll() is not None
-
-            c = 1
-            dump('\rRunning simulations...{:d}/{:d}'.format(c, nsrc))
-            while self.irunParallel2:
-                while wds and len(self.procs) < ncores:
-                    wd = wds.pop()
-                    if OS == 'Windows':
-                        p = Popen(cmd, cwd=wd, stdout=PIPE, shell=False, universal_newlines=True, startupinfo=startupinfo)
-                    else:
-                        p = Popen(cmd, cwd=wd, stdout=PIPE, shell=False, universal_newlines=True)
-                    self.procs.append(p)
-
-                for p in self.procs:
-                    if done(p):
-                        self.procs.remove(p)
-                        c = c+1
-                        dump('\rRunning simulations...{:d}/{:d}'.format(c, nsrc))
-
-                if not self.procs and not wds:
-                    break
-                else:
-                    time.sleep(0.05) # (g) why do we need that again?
-
-            # retrieve data
-            ip = True if self.typ[0] == 'c' else False
-            for j, wd in enumerate(wds2):
-                elec, df = protocolParser(os.path.join(wd, self.typ + '_forward.dat'), ip=ip, fwd=True)
-                Rsim[:,j+1] = df['resist'].values # TODO no IP implemented in this approach...
-            [shutil.rmtree(wd) for wd in wds2]
-
+        for i, survey in enumerate(self.surveys):
+            # compute response for each possible sources (Rsim)
+            Robs, Rsim = self._runSimulationCSD(isrc=imin, index=i, dump=dump, njobs=njobs)
+            nquad = len(Robs) # number of measured resistances
+            
             # buiding matrix A
             A = np.zeros((nquad + 1  + nsrc, nsrc))
             A[:nquad,:] = Rsim
@@ -2936,7 +2975,7 @@ class Project(object): # Project master class instanciated by the GUI
 #             L2[-1,-1] = -1
             L1 = np.eye(nsrc)*0.1 + np.eye(nsrc, k=-1)*-0.1
             L1[0,1] = -0.1
-            A[nquad+1:,:] = reg
+            A[nquad+1:,:] = L1
 
             # building matrix b
             b = np.zeros((nquad + 1 + nsrc, 1))
@@ -2944,18 +2983,41 @@ class Project(object): # Project master class instanciated by the GUI
             b[nquad,0] = 1 # charge conservation constrain
 
             # buidling weights
-            wA = np.diag(np.ones(A.shape[0]))
-            wA[nquad+1, nquad+1] = 1000 # more weight on constrain
             if weightType == 'const':
-                wb = np.diag(np.ones(b.shape[0]))
+                a = np.ones(b.shape[0])
             elif weightType == 'sqrt':
                 a = np.ones(b.shape[0])
                 a[:nquad+1] = 1/np.sqrt(np.abs(b.flatten()[:nquad+1]))
-                wb = np.diag(a) # TODO this doesn't do charge conservation ... so maybe normalized it all?
+                # TODO this doesn't do charge conservation ... so maybe normalized it all?
             elif weightType == 'recip':
                 pass
+            a[nquad+1:] = wreg # reg weights
+            w = np.diag(a)
+            w[nquad+1, nquad+1] = 1000 # more weight on constrain
+            wA = w
+            wb = w
             # TODO could be from reciprocal measurements
 
+            # L-curve
+            if len(lcurve) > 0:
+                dataMisfit = np.zeros(len(lcurve))
+                modelMisfit = np.zeros(len(lcurve))
+                for j, val in enumerate(lcurve):
+                    a[nquad+1:] = val
+                    w = np.diag(a)
+                    res = lsq_linear(np.dot(w,A), np.dot(w,b).flatten(), bounds=(0,1))
+                    x = res.x
+                    newb = np.dot(A,x)
+                    dataMisfit[j] = np.sum((newb[:nquad]-b.flatten()[:nquad])**2)/nquad
+                    modelMisfit[j] = np.sum((newb[nquad+1:]-b.flatten()[nquad+1:])**2)/nsrc
+                print(dataMisfit)
+                print(modelMisfit)
+                fig, ax = plt.subplots()
+                ax.loglog(modelMisfit, dataMisfit, 'ro')
+#                 [ax.text(modelMisfit, dataMisfit, '{:.2e}'.format(val)) for val in lcurve]
+                ax.set_xlabel('Model Misfit')
+                ax.set_ylabel('Data Misfit')
+                
     #         print(A)
     #         print(b)
 #             fig, ax = plt.subplots()
