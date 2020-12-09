@@ -3000,6 +3000,7 @@ class Project(object): # Project master class instanciated by the GUI
 
             # L-curve
             if len(lcurve) > 0:
+                dump('...lcurve')
                 dataMisfit = np.zeros(len(lcurve))
                 modelMisfit = np.zeros(len(lcurve))
                 for j, val in enumerate(lcurve):
@@ -3010,13 +3011,13 @@ class Project(object): # Project master class instanciated by the GUI
                     newb = np.dot(A,x)
                     dataMisfit[j] = np.sum((newb[:nquad]-b.flatten()[:nquad])**2)/nquad
                     modelMisfit[j] = np.sum((newb[nquad+1:]-b.flatten()[nquad+1:])**2)/nsrc
-                print(dataMisfit)
-                print(modelMisfit)
+                print('\ndatamisfit: ', dataMisfit)
+                print('modelmisfit: ', modelMisfit)
                 fig, ax = plt.subplots()
-                ax.loglog(modelMisfit, dataMisfit, 'ro')
+                ax.loglog(dataMisfit, modelMisfit, 'ro')
 #                 [ax.text(modelMisfit, dataMisfit, '{:.2e}'.format(val)) for val in lcurve]
-                ax.set_xlabel('Model Misfit')
-                ax.set_ylabel('Data Misfit')
+                ax.set_ylabel('Model Misfit')
+                ax.set_xlabel('Data Misfit')
                 
     #         print(A)
     #         print(b)
