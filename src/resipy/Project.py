@@ -2698,6 +2698,45 @@ class Project(object): # Project master class instanciated by the GUI
         i2keep = (seq[:,2] != 1) & (seq[:,3] != 1) # no potential measurement on B
         self.sequence = seq[i2keep,:]
         
+    
+    
+    def createSequenceCSD_new(self,seqIdx=None,VRTe = range(66, 371),
+                       *kwargs):
+        """
+        tile a sequence and sobstitute the injection electrode
+        
+        parameters:
+        ===
+        * seqIdx: the sequence (t: np.array)
+        * VRTe: list of VRTe to use as injection (t: range, int, list, np.ndarray)
+    
+        return:
+        ===
+        * VRTe_seq : complete sequence for VRTe simulation (t: np.ndarray)
+        """
+        # check some args
+        types_seq = [np.ndarray]
+        types_VRTe = [range, list, np.ndarray, int]
+        if not type(VRTe) in types_VRTe:
+            raise TypeError('inappropriate arg type, VRTe')
+        if not type(seqIdx) in types_seq:
+            raise TypeError('inappropriate arg type, seq')
+        if isinstance(VRTe, int):
+            VRTe = [VRTe]
+        if len(VRTe) == 0:
+            raise ValueError('inappropriate arg value, VRTe length must be > 0')
+        # function
+        # print(seq)
+        num_VRTe = len(VRTe)
+        VRTe_seq = np.tile(seqIdx, (num_VRTe, 1))
+        
+        for i, vrte in enumerate(VRTe):
+            VRTe_seq[range(i * len(seqIdx), (i + 1) * len(seqIdx)), 0] = vrte
+        
+        print('nb of quadripole VRTE seq=' + str(len(VRTe_seq)))   
+        self.sequence = VRTe_seq
+           
+        return  self.sequence
         
         
     def forwardCSD(self, sources=[(1.0, 0.0, -1.0, 1.0)], noise=0.05, iplot=False):
@@ -2752,7 +2791,7 @@ class Project(object): # Project master class instanciated by the GUI
         # save to dataframe
         self.surveys[0].df['resist'] = Robs
         
-        
+    
         
     def _runSimulationCSD(self, isrc, index=0, dump=None, njobs=8):
         """Run simulations to prepare CSD inversion.
@@ -2923,7 +2962,11 @@ class Project(object): # Project master class instanciated by the GUI
         dx = np.linspace(*grid[0])
         dy = np.linspace(*grid[1])
         dz = np.linspace(*grid[2])
-        gridx, gridy, gridz = np.meshgrid(dx, dy, dz)
+        if len(dy) > 1: # (g) is this needed?
+            gridx, gridy, gridz = np.meshgrid(dx, dy, dz)
+        else:
+            gridx, gridz = np.meshgrid(dx, dz)
+            gridy = np.zeros(np.shape(gridx))
         gridx = gridx.flatten()
         gridy = gridy.flatten()
         gridz = gridz.flatten()
