@@ -2700,21 +2700,23 @@ class Project(object): # Project master class instanciated by the GUI
         
     
     
-    def createSequenceCSD_new(self,seqIdx=None,VRTe = range(66, 371),
-                       *kwargs):
-        """
-        tile a sequence and sobstitute the injection electrode
+    def createSequenceCSD_new(self, seqIdx=None, VRTe=range(66, 371), **kwargs):
+        """Tile a sequence and subsitute the injection electrodes.
+        VRTe = ??
         
-        parameters:
-        ===
-        * seqIdx: the sequence (t: np.array)
-        * VRTe: list of VRTe to use as injection (t: range, int, list, np.ndarray)
+        Parameters
+        ----------
+        seqIdx : numpy.array
+            The sequence of 4 columns (ABMN).
+        VRTe : array_like, optional
+            List of VRTe to use as injection.
     
-        return:
-        ===
-        * VRTe_seq : complete sequence for VRTe simulation (t: np.ndarray)
+        Returns
+        -------
+        VRTe_seq : numpy.array
+            Complete sequence for VRTe simulation.
         """
-        # check some args
+        # check arguments
         types_seq = [np.ndarray]
         types_VRTe = [range, list, np.ndarray, int]
         if not type(VRTe) in types_VRTe:
