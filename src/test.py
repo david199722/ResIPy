@@ -630,7 +630,6 @@ k.showResults(index=0,use_pyvista=use_pyvista)
 k.showResults(index=1,use_pyvista=use_pyvista)
 
 k.mesh.orderNodes()
-t1 = time.time() - t0
 print('elapsed: {:.4}s'.format(time.time() - t0))
 timings['dc-3d-timelapse'] = time.time() - t0
 

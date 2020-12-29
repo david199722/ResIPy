@@ -319,6 +319,7 @@ class Project(object): # Project master class instanciated by the GUI
         self.custSeq = False # flag - True if of 3D custom sequence imported
         self.errTyp = 'global'# type of error model to be used in batch and timelapse surveys
         self.surfaceIdx = None # used to show plan view iterations of 3D inversions
+        self.darkMode = False # If true, electrodes wil be plotted in white, else black
         self.csd = pd.DataFrame(columns=['x','y','z','csd']) # CSD dataframe to be populated by invertCSD()
 
             
